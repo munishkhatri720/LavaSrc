@@ -3,24 +3,19 @@ package com.github.topi314.lavasrc.jiosaavan;
 import com.github.topi314.lavasearch.AudioSearchManager;
 import com.github.topi314.lavasearch.result.AudioSearchResult;
 import com.github.topi314.lavasearch.result.BasicAudioSearchResult;
-import com.github.topi314.lavasrc.ExtendedAudioPlaylist;
+import com.github.topi314.lavasrc.ExtendedAudioSourceManager;
 import com.github.topi314.lavasrc.LavaSrcTools;
-import com.github.topi314.lavasrc.mirror.DefaultMirroringAudioTrackResolver;
-import com.github.topi314.lavasrc.mirror.MirroringAudioSourceManager;
-import com.github.topi314.lavasrc.mirror.MirroringAudioTrackResolver;
 import com.sedmelluq.discord.lavaplayer.player.AudioPlayerManager;
+import com.sedmelluq.discord.lavaplayer.tools.FriendlyException;
 import com.sedmelluq.discord.lavaplayer.tools.JsonBrowser;
 import com.sedmelluq.discord.lavaplayer.tools.io.HttpClientTools;
 import com.sedmelluq.discord.lavaplayer.tools.io.HttpConfigurable;
+import com.sedmelluq.discord.lavaplayer.tools.io.HttpInterface;
 import com.sedmelluq.discord.lavaplayer.tools.io.HttpInterfaceManager;
 import com.sedmelluq.discord.lavaplayer.track.*;
 import org.apache.http.client.config.RequestConfig;
-import org.apache.http.client.entity.UrlEncodedFormEntity;
 import org.apache.http.client.methods.HttpGet;
-import org.apache.http.client.methods.HttpHead;
-import org.apache.http.client.methods.HttpPost;
 import org.apache.http.impl.client.HttpClientBuilder;
-import org.apache.http.message.BasicNameValuePair;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
@@ -30,84 +25,45 @@ import java.io.DataInput;
 import java.io.IOException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.time.Instant;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
-public class JioSaavanSourceManager extends MirroringAudioSourceManager implements HttpConfigurable, AudioSearchManager {
+public class JioSaavanSourceManager extends ExtendedAudioSourceManager implements HttpConfigurable, AudioSearchManager {
 
-	public static final Pattern URL_PATTERN = Pattern.compile("(https?://)(www\\.)?open\\.spotify\\.com/((?<region>[a-zA-Z-]+)/)?(user/(?<user>[a-zA-Z0-9-_]+)/)?(?<type>track|album|playlist|artist)/(?<identifier>[a-zA-Z0-9-_]+)");
+	public static final Pattern URL_PATTERN = Pattern.compile("(https?://)?(www\\.)?deezer\\.com/(?<countrycode>[a-zA-Z]{2}/)?(?<type>track|album|playlist|artist)/(?<identifier>[0-9]+)");
 	public static final String SEARCH_PREFIX = "jssearch:";
-	public static final String RECOMMENDATIONS_PREFIX = "jsrec:";
-	public static final String PREVIEW_PREFIX = "spprev:";
-	public static final long PREVIEW_LENGTH = 30000;
-	public static final String SHARE_URL = "https://spotify.link/";
-	public static final int PLAYLIST_MAX_PAGE_ITEMS = 100;
-	public static final int ALBUM_MAX_PAGE_ITEMS = 50;
-	public static final String API_BASE = "https://api.spotify.com/v1/";
-	public static final Set<AudioSearchResult.Type> SEARCH_TYPES = Set.of(AudioSearchResult.Type.ALBUM, AudioSearchResult.Type.ARTIST, AudioSearchResult.Type.PLAYLIST, AudioSearchResult.Type.TRACK);
-	private static final Logger log = LoggerFactory.getLogger(SpotifySourceManager.class);
+	public static final String SHARE_URL = "https://www.jiosaavn.com/";
+	public static final String PUBLIC_API_BASE = "https://api.deezer.com/2.0";
+	public static final String PRIVATE_API_BASE = "https://www.deezer.com/ajax/gw-light.php";
+	public static final String MEDIA_BASE = "https://media.deezer.com/v1";
+	public static final Set<AudioSearchResult.Type> SEARCH_TYPES = Set.of(AudioSearchResult.Type.TRACK, AudioSearchResult.Type.ALBUM, AudioSearchResult.Type.PLAYLIST, AudioSearchResult.Type.ARTIST);
+	private static final Logger log = LoggerFactory.getLogger(JioSaavanSourceManager.class);
 
-	private final HttpInterfaceManager httpInterfaceManager = HttpClientTools.createDefaultThreadLocalManager();
-	private final String clientId;
-	private final String clientSecret;
-	private final String countryCode;
-	private int playlistPageLimit = 6;
-	private int albumPageLimit = 6;
-	private String token;
-	private Instant tokenExpire;
+	private final HttpInterfaceManager httpInterfaceManager;
 
-	public SpotifySourceManager(String[] providers, String clientId, String clientSecret, String countryCode, AudioPlayerManager audioPlayerManager) {
-		this(clientId, clientSecret, countryCode, unused -> audioPlayerManager, new DefaultMirroringAudioTrackResolver(providers));
-	}
-
-	public SpotifySourceManager(String[] providers, String clientId, String clientSecret, String countryCode, Function<Void, AudioPlayerManager> audioPlayerManager) {
-		this(clientId, clientSecret, countryCode, audioPlayerManager, new DefaultMirroringAudioTrackResolver(providers));
-	}
-
-	public SpotifySourceManager(String clientId, String clientSecret, String countryCode, AudioPlayerManager audioPlayerManager, MirroringAudioTrackResolver mirroringAudioTrackResolver) {
-		this(clientId, clientSecret, countryCode, unused -> audioPlayerManager, mirroringAudioTrackResolver);
-	}
-
-	public SpotifySourceManager(String clientId, String clientSecret, String countryCode, Function<Void, AudioPlayerManager> audioPlayerManager, MirroringAudioTrackResolver mirroringAudioTrackResolver) {
-		super(audioPlayerManager, mirroringAudioTrackResolver);
-
-		if (clientId == null || clientId.isEmpty()) {
-			throw new IllegalArgumentException("Spotify client id must be set");
+	public DeezerAudioSourceManager(String apiUrl) {
+		if (apiUrl == null || apiUrl.isEmpty()) {
+			throw new IllegalArgumentException("Api url is missing");
 		}
-		this.clientId = clientId;
-
-		if (clientSecret == null || clientSecret.isEmpty()) {
-			throw new IllegalArgumentException("Spotify secret must be set");
-		}
-		this.clientSecret = clientSecret;
-
-		if (countryCode == null || countryCode.isEmpty()) {
-			countryCode = "US";
-		}
-		this.countryCode = countryCode;
+		this.apiUrl = apiUrl;
+		this.httpInterfaceManager = HttpClientTools.createDefaultThreadLocalManager();
 	}
 
-	public void setPlaylistPageLimit(int playlistPageLimit) {
-		this.playlistPageLimit = playlistPageLimit;
-	}
-
-	public void setAlbumPageLimit(int albumPageLimit) {
-		this.albumPageLimit = albumPageLimit;
-	}
-
+	@NotNull
 	@Override
 	public String getSourceName() {
-		return "spotify";
+		return "jiosaavan";
 	}
 
 	@Override
 	public AudioTrack decodeTrack(AudioTrackInfo trackInfo, DataInput input) throws IOException {
 		var extendedAudioTrackInfo = super.decodeTrack(input);
-		return new SpotifyAudioTrack(trackInfo,
+		return new DeezerAudioTrack(trackInfo,
 			extendedAudioTrackInfo.albumName,
 			extendedAudioTrackInfo.albumUrl,
 			extendedAudioTrackInfo.artistUrl,
@@ -141,21 +97,21 @@ public class JioSaavanSourceManager extends MirroringAudioSourceManager implemen
 	public AudioItem loadItem(String identifier, boolean preview) {
 		try {
 			if (identifier.startsWith(SEARCH_PREFIX)) {
-				return this.getSearch(identifier.substring(SEARCH_PREFIX.length()).trim(), preview);
+				return this.getSearch(identifier.substring(SEARCH_PREFIX.length()), preview);
 			}
 
-			if (identifier.startsWith(RECOMMENDATIONS_PREFIX)) {
-				return this.getRecommendations(identifier.substring(RECOMMENDATIONS_PREFIX.length()).trim(), preview);
+			if (identifier.startsWith(ISRC_PREFIX)) {
+				return this.getTrackByISRC(identifier.substring(ISRC_PREFIX.length()), preview);
 			}
 
 			// If the identifier is a share URL, we need to follow the redirect to find out the real url behind it
 			if (identifier.startsWith(SHARE_URL)) {
-				var request = new HttpHead(identifier);
+				var request = new HttpGet(identifier);
 				request.setConfig(RequestConfig.custom().setRedirectsEnabled(false).build());
 				try (var response = this.httpInterfaceManager.getInterface().execute(request)) {
-					if (response.getStatusLine().getStatusCode() == 307) {
+					if (response.getStatusLine().getStatusCode() == 302) {
 						var location = response.getFirstHeader("Location").getValue();
-						if (location.startsWith("https://open.spotify.com/")) {
+						if (location.startsWith("https://www.deezer.com/")) {
 							return this.loadItem(location, preview);
 						}
 					}
@@ -182,269 +138,196 @@ public class JioSaavanSourceManager extends MirroringAudioSourceManager implemen
 				case "artist":
 					return this.getArtist(id, preview);
 			}
+
 		} catch (IOException e) {
 			throw new RuntimeException(e);
 		}
 		return null;
 	}
 
-	public void requestToken() throws IOException {
-		var request = new HttpPost("https://accounts.spotify.com/api/token");
-		request.addHeader("Authorization", "Basic " + Base64.getEncoder().encodeToString((this.clientId + ":" + this.clientSecret).getBytes(StandardCharsets.UTF_8)));
-		request.setEntity(new UrlEncodedFormEntity(List.of(new BasicNameValuePair("grant_type", "client_credentials")), StandardCharsets.UTF_8));
-
-		var json = LavaSrcTools.fetchResponseAsJson(this.httpInterfaceManager.getInterface(), request);
-		this.token = json.get("access_token").text();
-		this.tokenExpire = Instant.now().plusSeconds(json.get("expires_in").asLong(0));
-	}
-
-	public String getToken() throws IOException {
-		if (this.token == null || this.tokenExpire == null || this.tokenExpire.isBefore(Instant.now())) {
-			this.requestToken();
-		}
-		return this.token;
-	}
-
 	public JsonBrowser getJson(String uri) throws IOException {
 		var request = new HttpGet(uri);
-		request.addHeader("Authorization", "Bearer " + this.getToken());
+		request.setHeader("Accept", "application/json");
 		return LavaSrcTools.fetchResponseAsJson(this.httpInterfaceManager.getInterface(), request);
-	}
-
-	private AudioSearchResult getAutocomplete(String query, Set<AudioSearchResult.Type> types) throws IOException {
-		if (types.contains(AudioSearchResult.Type.TEXT)) {
-			throw new IllegalArgumentException("text is not a valid search type for Spotify");
-		}
-		if (types.isEmpty()) {
-			types = SEARCH_TYPES;
-		}
-		var url = API_BASE + "search?q=" + URLEncoder.encode(query, StandardCharsets.UTF_8) + "&type=" + types.stream().map(AudioSearchResult.Type::getName).collect(Collectors.joining(","));
-		var json = this.getJson(url);
-		if (json == null) {
-			return AudioSearchResult.EMPTY;
-		}
-
-		var albums = new ArrayList<AudioPlaylist>();
-		for (var album : json.get("albums").get("items").values()) {
-			albums.add(new SpotifyAudioPlaylist(
-				album.get("name").text(),
-				Collections.emptyList(),
-				ExtendedAudioPlaylist.Type.ALBUM,
-				album.get("external_urls").get("spotify").text(),
-				album.get("images").index(0).get("url").text(),
-				album.get("artists").index(0).get("name").text(),
-				(int) album.get("total_tracks").asLong(0)
-			));
-		}
-
-		var artists = new ArrayList<AudioPlaylist>();
-		for (var artist : json.get("artists").get("items").values()) {
-			artists.add(new SpotifyAudioPlaylist(
-				artist.get("name").text() + "'s Top Tracks",
-				Collections.emptyList(),
-				ExtendedAudioPlaylist.Type.ARTIST,
-				artist.get("external_urls").get("spotify").text(),
-				artist.get("images").index(0).get("url").text(),
-				artist.get("name").text(),
-				null
-			));
-		}
-
-		var playlists = new ArrayList<AudioPlaylist>();
-		for (var playlist : json.get("playlists").get("items").values()) {
-			playlists.add(new SpotifyAudioPlaylist(
-				playlist.get("name").text(),
-				Collections.emptyList(),
-				ExtendedAudioPlaylist.Type.PLAYLIST,
-				playlist.get("external_urls").get("spotify").text(),
-				playlist.get("images").index(0).get("url").text(),
-				playlist.get("owner").get("display_name").text(),
-				(int) playlist.get("tracks").get("total").asLong(0)
-			));
-		}
-
-		var tracks = this.parseTrackItems(json.get("tracks"), false);
-
-		return new BasicAudioSearchResult(tracks, albums, artists, playlists, new ArrayList<>());
-	}
-
-	public AudioItem getSearch(String query, boolean preview) throws IOException {
-		var json = this.getJson(API_BASE + "search?q=" + URLEncoder.encode(query, StandardCharsets.UTF_8) + "&type=track");
-		if (json == null || json.get("tracks").get("items").values().isEmpty()) {
-			return AudioReference.NO_TRACK;
-		}
-
-		var artistIds = json.get("tracks").get("items").values().stream().map(track -> track.get("artists").index(0).get("id").text()).collect(Collectors.joining(","));
-		var artistJson = this.getJson(API_BASE + "artists?ids=" + artistIds);
-		if (artistJson != null) {
-			for (var artist : artistJson.get("artists").values()) {
-				for (var track : json.get("tracks").get("items").values()) {
-					if (track.get("artists").index(0).get("id").text().equals(artist.get("id").text())) {
-						track.get("artists").index(0).put("images", artist.get("images"));
-					}
-				}
-			}
-		}
-
-		return new BasicAudioPlaylist("Search results for: " + query, this.parseTrackItems(json.get("tracks"), preview), null, true);
-	}
-
-	public AudioItem getRecommendations(String query, boolean preview) throws IOException {
-		var json = this.getJson(API_BASE + "recommendations?" + query);
-		if (json == null || json.get("tracks").values().isEmpty()) {
-			return AudioReference.NO_TRACK;
-		}
-
-		return new SpotifyAudioPlaylist("Spotify Recommendations:", this.parseTracks(json, preview), ExtendedAudioPlaylist.Type.RECOMMENDATIONS, null, null, null, null);
-	}
-
-	public AudioItem getAlbum(String id, boolean preview) throws IOException {
-		var json = this.getJson(API_BASE + "albums/" + id);
-		if (json == null) {
-			return AudioReference.NO_TRACK;
-		}
-
-		var artistJson = this.getJson(API_BASE + "artists/" + json.get("artists").index(0).get("id").text());
-		if (artistJson == null) {
-			artistJson = JsonBrowser.newMap();
-		}
-
-
-		var tracks = new ArrayList<AudioTrack>();
-		JsonBrowser page;
-		var offset = 0;
-		var pages = 0;
-		do {
-			page = this.getJson(API_BASE + "albums/" + id + "/tracks?limit=" + ALBUM_MAX_PAGE_ITEMS + "&offset=" + offset);
-			offset += ALBUM_MAX_PAGE_ITEMS;
-
-			var tracksPage = this.getJson(API_BASE + "tracks/?ids=" + page.get("items").values().stream().map(track -> track.get("id").text()).collect(Collectors.joining(",")));
-
-			for (var track : tracksPage.get("tracks").values()) {
-				var albumJson = JsonBrowser.newMap();
-				albumJson.put("external_urls", json.get("external_urls"));
-				albumJson.put("name", json.get("name"));
-				albumJson.put("images", json.get("images"));
-				track.put("album", albumJson);
-
-				track.get("artists").index(0).put("images", artistJson.get("images"));
-			}
-
-			tracks.addAll(this.parseTracks(tracksPage, preview));
-		}
-		while (page.get("next").text() != null && ++pages < this.albumPageLimit);
-
-		if (tracks.isEmpty()) {
-			return AudioReference.NO_TRACK;
-		}
-
-		return new SpotifyAudioPlaylist(json.get("name").text(), tracks, ExtendedAudioPlaylist.Type.ALBUM, json.get("external_urls").get("spotify").text(), json.get("images").index(0).get("url").text(), json.get("artists").index(0).get("name").text(), (int) json.get("total_tracks").asLong(0));
-
-	}
-
-	public AudioItem getPlaylist(String id, boolean preview) throws IOException {
-		var json = this.getJson(API_BASE + "playlists/" + id);
-		if (json == null) {
-			return AudioReference.NO_TRACK;
-		}
-
-		var tracks = new ArrayList<AudioTrack>();
-		JsonBrowser page;
-		var offset = 0;
-		var pages = 0;
-		do {
-			page = this.getJson(API_BASE + "playlists/" + id + "/tracks?limit=" + PLAYLIST_MAX_PAGE_ITEMS + "&offset=" + offset);
-			offset += PLAYLIST_MAX_PAGE_ITEMS;
-
-			for (var value : page.get("items").values()) {
-				var track = value.get("track");
-				if (track.isNull() || track.get("is_local").asBoolean(false)) {
-					continue;
-				}
-				tracks.add(this.parseTrack(track, preview));
-			}
-
-		}
-		while (page.get("next").text() != null && ++pages < this.playlistPageLimit);
-
-		if (tracks.isEmpty()) {
-			return AudioReference.NO_TRACK;
-		}
-
-		return new SpotifyAudioPlaylist(json.get("name").text(), tracks, ExtendedAudioPlaylist.Type.PLAYLIST, json.get("external_urls").get("spotify").text(), json.get("images").index(0).get("url").text(), json.get("owner").get("display_name").text(), (int) json.get("tracks").get("total").asLong(0));
-	}
-
-	public AudioItem getArtist(String id, boolean preview) throws IOException {
-		var json = this.getJson(API_BASE + "artists/" + id);
-		if (json == null) {
-			return AudioReference.NO_TRACK;
-		}
-
-		var tracksJson = this.getJson(API_BASE + "artists/" + id + "/top-tracks?market=" + this.countryCode);
-		if (tracksJson == null || tracksJson.get("tracks").values().isEmpty()) {
-			return AudioReference.NO_TRACK;
-		}
-
-		for (var track : tracksJson.get("tracks").values()) {
-			track.get("artists").index(0).put("images", json.get("images"));
-		}
-
-		return new SpotifyAudioPlaylist(json.get("name").text() + "'s Top Tracks", this.parseTracks(tracksJson, preview), ExtendedAudioPlaylist.Type.ARTIST, json.get("external_urls").get("spotify").text(), json.get("images").index(0).get("url").text(), json.get("name").text(), (int) tracksJson.get("tracks").get("total").asLong(0));
-	}
-
-	public AudioItem getTrack(String id, boolean preview) throws IOException {
-		var json = this.getJson(API_BASE + "tracks/" + id);
-		if (json == null) {
-			return AudioReference.NO_TRACK;
-		}
-
-		var artistJson = this.getJson(API_BASE + "artists/" + json.get("artists").index(0).get("id").text());
-		if (artistJson != null) {
-			json.get("artists").index(0).put("images", artistJson.get("images"));
-		}
-
-		return this.parseTrack(json, preview);
 	}
 
 	private List<AudioTrack> parseTracks(JsonBrowser json, boolean preview) {
 		var tracks = new ArrayList<AudioTrack>();
-		for (var value : json.get("tracks").values()) {
-			tracks.add(this.parseTrack(value, preview));
-		}
-		return tracks;
-	}
-
-	private List<AudioTrack> parseTrackItems(JsonBrowser json, boolean preview) {
-		var tracks = new ArrayList<AudioTrack>();
-		for (var value : json.get("items").values()) {
-			if (value.get("is_local").asBoolean(false)) {
+		for (var track : json.get("data").values()) {
+			if (!track.get("type").text().equals("track")) {
 				continue;
 			}
-			tracks.add(this.parseTrack(value, preview));
+			if (!track.get("readable").as(Boolean.class)) {
+				log.warn("Skipping track {} by {} because it is not readable. Available countries: {}", track.get("title").text(), track.get("artist").get("name").text(), track.get("available_countries").text());
+				continue;
+			}
+			tracks.add(this.parseTrack(track, preview));
 		}
 		return tracks;
 	}
 
 	private AudioTrack parseTrack(JsonBrowser json, boolean preview) {
-		return new SpotifyAudioTrack(
+		if (!json.get("readable").as(Boolean.class)) {
+			throw new FriendlyException("This track is not readable. Available countries: " + json.get("available_countries").text(), FriendlyException.Severity.COMMON, null);
+		}
+		var id = json.get("id").text();
+		return new DeezerAudioTrack(
 			new AudioTrackInfo(
-				json.get("name").text(),
-				json.get("artists").index(0).get("name").text(),
-				preview ? PREVIEW_LENGTH : json.get("duration_ms").asLong(0),
-				json.get("id").text(),
+				json.get("title").text(),
+				json.get("artist").get("name").text(),
+				preview ? PREVIEW_LENGTH : json.get("duration").asLong(0) * 1000,
+				id,
 				false,
-				json.get("external_urls").get("spotify").text(),
-				json.get("album").get("images").index(0).get("url").text(),
-				json.get("external_ids").get("isrc").text()
+				"https://deezer.com/track/" + id,
+				json.get("album").get("cover_xl").text(),
+				json.get("isrc").text()
 			),
-			json.get("album").get("name").text(),
-			json.get("album").get("external_urls").get("spotify").text(),
-			json.get("artists").index(0).get("external_urls").get("spotify").text(),
-			json.get("artists").index(0).get("images").index(0).get("url").text(),
-			json.get("preview_url").text(),
+			json.get("album").get("title").text(),
+			"https://www.deezer.com/album/" + json.get("album").get("id").text(),
+			"https://www.deezer.com/artist/" + json.get("artist").get("id").text(),
+			json.get("artist").get("picture_xl").text(),
+			json.get("preview").text(),
 			preview,
 			this
 		);
+	}
+
+	private AudioSearchResult getAutocomplete(String query, Set<AudioSearchResult.Type> types) throws IOException {
+		if (types.contains(AudioSearchResult.Type.TEXT)) {
+			throw new IllegalArgumentException("text is not a valid search type for Deezer");
+		}
+		if (types.isEmpty()) {
+			types = SEARCH_TYPES;
+		}
+		var json = this.getJson(PUBLIC_API_BASE + "/search/autocomplete?q=" + URLEncoder.encode(query, StandardCharsets.UTF_8));
+		if (json == null) {
+			return AudioSearchResult.EMPTY;
+		}
+
+		var albums = new ArrayList<AudioPlaylist>();
+		if (types.contains(AudioSearchResult.Type.ALBUM)) {
+			for (var album : json.get("albums").get("data").values()) {
+				albums.add(new DeezerAudioPlaylist(
+					album.get("title").text(),
+					Collections.emptyList(),
+					DeezerAudioPlaylist.Type.ALBUM,
+					album.get("link").text(),
+					album.get("cover_xl").text(),
+					album.get("artist").get("name").text(),
+					(int) album.get("nb_tracks").asLong(0)
+				));
+			}
+		}
+
+		var artists = new ArrayList<AudioPlaylist>();
+		if (types.contains(AudioSearchResult.Type.ARTIST)) {
+			for (var artist : json.get("artists").get("data").values()) {
+				artists.add(new DeezerAudioPlaylist(
+					artist.get("name").text() + "'s Top Tracks",
+					Collections.emptyList(),
+					DeezerAudioPlaylist.Type.ARTIST,
+					artist.get("link").text(),
+					artist.get("picture_xl").text(),
+					artist.get("name").text(),
+					null
+				));
+			}
+		}
+
+		var playlists = new ArrayList<AudioPlaylist>();
+		if (types.contains(AudioSearchResult.Type.PLAYLIST)) {
+			for (var playlist : json.get("playlists").get("data").values()) {
+				playlists.add(new DeezerAudioPlaylist(
+					playlist.get("title").text(),
+					Collections.emptyList(),
+					DeezerAudioPlaylist.Type.PLAYLIST,
+					playlist.get("link").text(),
+					playlist.get("picture_xl").text(),
+					playlist.get("creator").get("name").text(),
+					(int) playlist.get("nb_tracks").asLong(0)
+				));
+			}
+		}
+
+		var tracks = this.parseTracks(json.get("tracks"), false);
+
+		return new BasicAudioSearchResult(tracks, albums, artists, playlists, new ArrayList<>());
+	}
+
+	private AudioItem getTrackByISRC(String isrc, boolean preview) throws IOException {
+		var json = this.getJson(PUBLIC_API_BASE + "/track/isrc:" + URLEncoder.encode(isrc, StandardCharsets.UTF_8));
+		if (json == null || json.get("id").isNull()) {
+			return AudioReference.NO_TRACK;
+		}
+		return this.parseTrack(json, preview);
+	}
+
+	private AudioItem getSearch(String query, boolean preview) throws IOException {
+		var json = this.getJson(PUBLIC_API_BASE + "/search?q=" + URLEncoder.encode(query, StandardCharsets.UTF_8));
+		if (json == null || json.get("data").values().isEmpty()) {
+			return AudioReference.NO_TRACK;
+		}
+
+		return new BasicAudioPlaylist("Deezer Search: " + query, this.parseTracks(json, preview), null, true);
+	}
+
+	private AudioItem getAlbum(String id, boolean preview) throws IOException {
+		var json = this.getJson(PUBLIC_API_BASE + "/album/" + id);
+		if (json == null || json.get("tracks").get("data").values().isEmpty()) {
+			return AudioReference.NO_TRACK;
+		}
+
+		var artworkUrl = json.get("cover_xl").text();
+		var author = json.get("contributors").values().get(0).get("name").text();
+
+		for (var track : json.get("tracks").get("data").values()) {
+			track.get("artist").put("picture_xl", json.get("artist").get("picture_xl"));
+		}
+
+		return new DeezerAudioPlaylist(json.get("title").text(), this.parseTracks(json.get("tracks"), preview), DeezerAudioPlaylist.Type.ALBUM, json.get("link").text(), artworkUrl, author, (int) json.get("nb_tracks").asLong(0));
+	}
+
+	private AudioItem getTrack(String id, boolean preview) throws IOException {
+		var json = this.getJson(PUBLIC_API_BASE + "/track/" + id);
+		if (json == null) {
+			return AudioReference.NO_TRACK;
+		}
+		return this.parseTrack(json, preview);
+	}
+
+	private AudioItem getPlaylist(String id, boolean preview) throws IOException {
+		var json = this.getJson(PUBLIC_API_BASE + "/playlist/" + id);
+		if (json == null || json.get("tracks").get("data").values().isEmpty()) {
+			return AudioReference.NO_TRACK;
+		}
+
+		var artworkUrl = json.get("picture_xl").text();
+		var author = json.get("creator").get("name").text();
+
+		var tracks = this.getJson(PUBLIC_API_BASE + "/playlist/" + id + "/tracks");
+
+		return new DeezerAudioPlaylist(json.get("title").text(), this.parseTracks(tracks, preview), DeezerAudioPlaylist.Type.PLAYLIST, json.get("link").text(), artworkUrl, author, (int) json.get("nb_tracks").asLong(0));
+	}
+
+	private AudioItem getArtist(String id, boolean preview) throws IOException {
+		var json = this.getJson(PUBLIC_API_BASE + "/artist/" + id);
+		if (json == null) {
+			return AudioReference.NO_TRACK;
+		}
+
+		var tracksJson = this.getJson(PUBLIC_API_BASE + "/artist/" + id + "/top?limit=50");
+		if (tracksJson == null || tracksJson.get("data").values().isEmpty()) {
+			return AudioReference.NO_TRACK;
+		}
+
+		for (var track : tracksJson.get("data").values()) {
+			track.get("artist").put("picture_xl", json.get("picture_xl"));
+		}
+
+		var artworkUrl = json.get("picture_xl").text();
+		var author = json.get("name").text();
+		var deezerTracks = this.parseTracks(tracksJson, preview);
+		return new DeezerAudioPlaylist(author + "'s Top Tracks", deezerTracks, DeezerAudioPlaylist.Type.ARTIST, json.get("link").text(), artworkUrl, author, deezerTracks.size());
 	}
 
 	@Override
@@ -464,6 +347,14 @@ public class JioSaavanSourceManager extends MirroringAudioSourceManager implemen
 	@Override
 	public void configureBuilder(Consumer<HttpClientBuilder> configurator) {
 		this.httpInterfaceManager.configureBuilder(configurator);
+	}
+
+	public String getMasterDecryptionKey() {
+		return this.masterDecryptionKey;
+	}
+
+	public HttpInterface getHttpInterface() {
+		return this.httpInterfaceManager.getInterface();
 	}
 
 }

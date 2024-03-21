@@ -47,6 +47,7 @@ public class LavaSrcPlugin implements AudioPlayerManagerConfiguration, SearchMan
 			if (appleMusicConfig.getPlaylistLoadLimit() > 0) {
 				appleMusic.setPlaylistPageLimit(appleMusicConfig.getPlaylistLoadLimit());
 			}
+			
 			if (appleMusicConfig.getAlbumLoadLimit() > 0) {
 				appleMusic.setAlbumPageLimit(appleMusicConfig.getAlbumLoadLimit());
 			}
