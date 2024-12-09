@@ -25,6 +25,7 @@ import org.apache.http.entity.ContentType;
 import org.apache.http.entity.StringEntity;
 import org.apache.http.impl.client.BasicCookieStore;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -33,6 +34,9 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.function.BiFunction;
+
+import javax.crypto.Cipher;
+import javax.crypto.spec.SecretKeySpec;
 
 public class DeezerAudioTrack extends ExtendedAudioTrack {
 
@@ -126,6 +130,82 @@ public class DeezerAudioTrack extends ExtendedAudioTrack {
 		return SourceWithFormat.fromResponse(json, trackTokenJson);
 	}
 
+	public SourceWithFormat getMedia(boolean useArl) throws IOException, URISyntaxException {
+		System.out.println("Using ARL: " + useArl);
+		var licenseToken = this.generateLicenceToken(useArl);
+       
+		var getTrackToken = new HttpPost(DeezerAudioSourceManager.PRIVATE_API_BASE + "?method=song.getListData&input=3&api_version=1.0&api_token=" + licenseToken.apiToken);
+		getTrackToken.setEntity(new StringEntity(String.format("{\"sng_ids\":[\"%s\"]}", this.trackInfo.identifier), ContentType.APPLICATION_JSON));
+		var trackTokenJson = this.getJsonResponse(getTrackToken, useArl);
+		DeezerAudioSourceManager.checkResponse(trackTokenJson, "Failed to get track token: ");
+
+		var md5Origin ="3aad7cd250f4de7c4c9afa225a598b35"; //trackTokenJson.get("results").get("data").values().get(0).get("MD5_ORIGIN").text();
+        var mediaVersion = "9";//trackTokenJson.get("results").get("data").values().get(0).get("MEDIA_VERSION").text();
+		var url = generateTrackUrl(this.getIdentifier().toString() , md5Origin, mediaVersion.toString(), 1);
+		return new SourceWithFormat(url  , TrackFormat.MP3_128, 3142634);
+
+	}
+
+	public static String bytesToHex(byte[] bytes) {
+        final char[] HEX_ARRAY = "0123456789ABCDEF".toCharArray();
+        char[] hexChars = new char[bytes.length * 2];
+        for (int j = 0; j < bytes.length; j++) {
+            int v = bytes[j] & 0xFF;
+            hexChars[j * 2] = HEX_ARRAY[v >>> 4];
+            hexChars[j * 2 + 1] = HEX_ARRAY[v & 0x0F];
+        }
+        return new String(hexChars);
+    }
+
+	public String generateTrackUrl(String trackId, String md5origin, String mediaVersion, int quality) {
+        try {
+            int magic = 164;
+
+            ByteArrayOutputStream step1 = new ByteArrayOutputStream();
+            step1.write(md5origin.getBytes());
+            step1.write(magic);
+            step1.write(Integer.toString(quality).getBytes());
+            step1.write(magic);
+            step1.write(trackId.getBytes());
+            step1.write(magic);
+            step1.write(mediaVersion.getBytes());
+            //Get MD5
+            MessageDigest md5 = MessageDigest.getInstance("MD5");
+            md5.update(step1.toByteArray());
+            byte[] digest = md5.digest();
+            String md5hex = bytesToHex(digest).toLowerCase();
+
+        
+			
+            ByteArrayOutputStream step2 = new ByteArrayOutputStream();
+            step2.write(md5hex.getBytes());
+            step2.write(magic);
+            step2.write(step1.toByteArray());
+            step2.write(magic);
+
+          
+            while(step2.size()%16 > 0) step2.write(46);
+
+           
+            Cipher cipher = Cipher.getInstance("AES/ECB/NoPadding");
+            SecretKeySpec key = new SecretKeySpec("jo6aey6haid2Teih".getBytes(), "AES");
+            cipher.init(Cipher.ENCRYPT_MODE, key);
+          
+            StringBuilder step3 = new StringBuilder();
+            for (int i=0; i<step2.size()/16; i++) {
+                byte[] b = Arrays.copyOfRange(step2.toByteArray(), i*16, (i+1)*16);
+                step3.append(bytesToHex(cipher.doFinal(b)).toLowerCase());
+            }
+
+            return "https://e-cdns-proxy-" + md5origin.charAt(0) + ".dzcdn.net/mobile/1/" + step3;
+
+        } catch (Exception e) {
+            e.printStackTrace();
+           // log.error("Error generating track URL! ID: " + trackId + " " + e);
+        }
+        return null;
+    }
+
 	public byte[] getTrackDecryptionKey() throws NoSuchAlgorithmException {
 		var md5 = Hex.encodeHex(MessageDigest.getInstance("MD5").digest(this.trackInfo.identifier.getBytes()), true);
 		var master_key = this.sourceManager.getMasterDecryptionKey().getBytes();
@@ -151,7 +231,8 @@ public class DeezerAudioTrack extends ExtendedAudioTrack {
 				return;
 			}
 
-			var source = this.getSource(this.sourceManager.getArl() != null, false);
+			//var source = this.getSource(this.sourceManager.getArl() != null, false);
+			var source = this.getMedia(true);
 			try (var stream = new DeezerPersistentHttpStream(httpInterface, source.url, source.contentLength, this.getTrackDecryptionKey())) {
 				processDelegate(source.format.trackFactory.apply(this.trackInfo, stream), executor);
 			}
